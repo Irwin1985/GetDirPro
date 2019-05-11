@@ -5,15 +5,23 @@ Displays the Select Directory dialog box from which you can choose a directory.
 
 **[GetDirPro](https://github.com/Irwin1985/GetDirPro)** - v.1.1 - Release 2019.05.10
 
-Usage:
-
+### Usage
+<pre>*-- Create object
     loDir = CreateObject("GetDirPro", "GetDirPro.prg")
+    *-- Prompt dialog box
     ?loDir.getDir([cDirectory [, cText [, cCaption]]])
+</pre>
 
-**PARAMETERS** 
+### Parameters 
 
-    Same as GETDIR() native function.
+**cDirectory**
+Specifies the directory that is initially displayed in the dialog box. When cDirectory is not specified, the dialog box opens with the Visual FoxPro default directory displayed.
 
-    [tcDirectory] = Default directory.
-    [tcText]      = Alternative text (above treeview)
-    [tcCaption]   = Windows title.
+**cText**
+Specifies the text for the directory list in the dialog box.
+
+**cCaption**
+Specifies the caption to display in the dialog title bar. The Windows default is "Select Directory".
+
+### Return Value
+Character
