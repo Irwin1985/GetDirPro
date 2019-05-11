@@ -6,7 +6,10 @@ Displays the Select Directory dialog box from which you can choose a directory.
 **[GetDirPro](https://github.com/Irwin1985/GetDirPro)** - v.1.1 - Release 2019.05.10
 
 ### Usage
-<pre>*-- Create object
+<pre>
+    *-- Set classLib
+    Set Procedure To "GetDirPro.Prg" Additive
+    *-- Create object
     loDir = CreateObject("GetDirPro", "GetDirPro.prg")
     *-- Prompt dialog box
     ?loDir.getDir([cDirectory [, cText [, cCaption]]])
