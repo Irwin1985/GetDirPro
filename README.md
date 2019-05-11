@@ -1,13 +1,13 @@
-# GetDirPro
-New Free Directory Selector 100% Visual FoxPro
+# GetDirPro ![](images/fbc_icon.png)
+Displays the Select Directory dialog box from which you can choose a directory.
 Usage:
 
     loDir = CreateObject("GetDirPro", "GetDirPro.prg")
-    ?loDir.GetDir()
+    ?loDir.getDir([cDirectory [, cText [, cCaption]]])
 
 **PARAMETERS** 
 
-    Same as GETDIR() native function)
+    Same as GETDIR() native function.
 
     [tcDirectory] = Default directory.
     [tcText]      = Alternative text (above treeview)
