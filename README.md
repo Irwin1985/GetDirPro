@@ -3,7 +3,7 @@ Displays the Select Directory dialog box from which you can choose a directory.
 
 ### Latest release
 
-**[GetDirPro_v_1_1](/GetDirPro_v_1_1/)** - v.1.1 - Release 2019.05.10
+**[GetDirPro](/GetDirPro/)** - v.1.1 - Release 2019.05.10
 
 Usage:
 
