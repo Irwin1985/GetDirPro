@@ -10,7 +10,7 @@ Displays the Select Directory dialog box from which you can choose a directory.
     *-- Set classLib
     Set Procedure To "GetDirPro.Prg" Additive
     *-- Create object
-    loDir = CreateObject("GetDirPro", "GetDirPro.prg")
+    loDir = NewObject("GetDirPro", "GetDirPro.prg")
     *-- Prompt dialog box
     ?loDir.getDir([cDirectory [, cText [, cCaption]]])
 ```
