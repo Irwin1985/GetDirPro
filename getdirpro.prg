@@ -1,345 +1,1012 @@
-*---------------------------------------------------------------------------------------------------------------*
+*==================================================================
+* GetDirPro 2.0.0 -- a folder picker written in Visual FoxPro
 *
-* @title:		Librería GetDirPro
-* @description:	Selector de Directorios hecho 100% en Visual FoxPro 9.0
+* Copyright (c) 2019-2026 Irwin Rodríguez. MIT License.
+* https://github.com/Irwin1985/GetDirPro
 *
-* @version:		1.2
-* @author:		Irwin Rodríguez
-* @email:		rodriguez.irwin@gmail.com
-* @license:		MIT
+* The same call as GETDIR(): GetDir(cFolder, cText, cCaption). Next to
+* the 1.x picker, measured on real disks:
 *
-* @usage:
-* loDir = CreateObject("GetDirPro", "GetDirPro.prg")
-* ?loDir.GetDir()
+* 1. THE TREE IS READ ON DEMAND. 1.x walked the whole drive when it
+*    opened: on C:\ of a development machine, 75,662 folders and the
+*    recursion stuck at 127 levels, the nesting limit of VFP. Now one
+*    level is read, and the others when they are opened.
 *
-* -------------------------------------------------------------------------
-* Version Log:
-* Release 2019-05-10	v.1.2		- Liberación formal en https://github.com/Irwin1985/GetDirPro
-*---------------------------------------------------------------------------------------------------------------*
+* 2. A FOLDER WITH A DOT IN ITS NAME IS THERE. The pattern was "*.",
+*    which leaves out "IrwinRodriguez.dev" and the like.
+*
+* 3. NO HIDDEN OR SYSTEM FOLDERS. That leaves out the compatibility
+*    junctions ("Application Data" and company) that point to their own
+*    parent, $Recycle.Bin and System Volume Information.
+*
+* 4. A NODE SHOWS THE NAME, AND THE PATH KEEPS ITS CASE. ADIR() returns
+*    names in upper case; the folders come from FileSystemObject, and
+*    the path returned is the real one.
+*
+* 5. A PATH CAN BE TYPED, AND FOLDERS CAN BE CREATED, with every
+*    missing level, when the user accepts.
+*
+* 6. THE ENVIRONMENT IS LEFT ALONE. 1.x turned SET SAFETY off and
+*    wrote four BMP files that two pickers at once shared.
+*
+* 7. WITHOUT THE COMMON CONTROLS IT FALLS BACK TO GETDIR() instead of
+*    leaving the user with nothing.
+*
+* 8. IT TAKES THE THEME OF THE APPLICATION. cTheme links a FoxStyleSheet
+*    theme to the dialog, FormReady() lets any code style it, and the
+*    tree takes the colours of the path box.
+*
+* Usage:
+*     SET PROCEDURE TO getdirpro.prg ADDITIVE
+*     loDir = CREATEOBJECT("GetDirPro")
+*     lcFolder = loDir.GetDir("C:\Projects", "Folder of the project")
+*==================================================================
 
-Define Class GetDirPro As Custom
-	Procedure Getdir
-		Lparameters tcDirectory As String, tcText As String, tcCaption As String
-		loForm = Createobject("frmGetDir", tcDirectory, tcText, tcCaption)
-		loForm.Show(1)
-		cPath = loForm.cPath
-		Release loForm
-		Return cPath
-	Endproc
-Enddefine
+#DEFINE GETDIRPRO_VERSION   "2.0.0"
+*-- TreeView messages: background, text and line colours
+#DEFINE TVM_SETBKCOLOR      4381
+#DEFINE TVM_SETTEXTCOLOR    4382
+#DEFINE TVM_SETLINECOLOR    4392
 
-*-- Internal Usage
-Define Class frmGetDir As Form
 
-	DataSession = 2
-	BorderStyle = 2
-	Height 		= 463
-	Width 		= 613
-	DoCreate 	= .T.
-	AutoCenter 	= .T.
-	Caption 	= "Form"
-	MaxButton 	= .F.
-	Closable	= .F.
-	MinButton 	= .F.
-	BackColor 	= Rgb(250,250,250)
-	cPath 		= ""
+DEFINE CLASS GetDirPro AS Custom
 
-	Add Object oletreeview As OleControl With ;
-		oleclass	= "MSComctlLib.TreeCtrl.2", ;
-		Top 		= 40, ;
-		Left 		= 12, ;
-		Height 		= 360, ;
-		Width 		= 590, ;
-		Name 		= "oleTreeview"
+    cVersion = GETDIRPRO_VERSION
 
-	Add Object cmbdrive As ComboBox With ;
-		RowSourceType 	= 3, ;
-		RowSource 		= "Select cDrive from qDisc Into Cursor qTempDrive", ;
-		Height 			= 23, ;
-		Left 			= 382, ;
-		Style 			= 2, ;
-		Top 			= 426, ;
-		Width 			= 73, ;
-		Name 			= "cmbDrive"
+    *-- What GetDir() returns, with the final backslash; "" when cancelled.
+    cPath = ""
 
-	Add Object btncancelar As CommandButton With ;
-		Top 			= 424, ;
-		Left 			= 530, ;
-		Height 			= 27, ;
-		Width 			= 73, ;
-		FontName 		= "Tahoma", ;
-		FontSize 		= 9, ;
-		Picture 		= "", ;
-		Caption 		= "\<Cancelar", ;
-		PicturePosition = 0, ;
-		BackColor 		= Rgb(255,255,255), ;
-		Themes 			= .T., ;
-		Name 			= "btnCancelar"
+    *-- Accept a folder that does not exist yet (creating it), and show
+    *-- the New folder button. .F. picks only among the folders there are.
+    lAllowCreate = .T.
 
-	Add Object btnaceptar As CommandButton With ;
-		Top 			= 424, ;
-		Left 			= 457, ;
-		Height 			= 27, ;
-		Width 			= 73, ;
-		FontName 		= "Tahoma", ;
-		FontSize 		= 9, ;
-		Picture 		= "", ;
-		Caption 		= "\<Aceptar", ;
-		PicturePosition = 0, ;
-		BackColor 		= Rgb(255,255,255), ;
-		Themes 			= .T., ;
-		Name 			= "btnAceptar"
+    *-- A FoxStyleSheet theme for the dialog ("dark", a .fss, the text of
+    *-- a theme). Empty: no theme. It needs foxstylesheet.prg loaded.
+    cTheme = ""
 
-	Add Object txtcurrentpath As TextBox With ;
-		Height 				= 23, ;
-		Left 				= 12, ;
-		ReadOnly 			= .T., ;
-		Top 				= 426, ;
-		Width 				= 365, ;
-		DisabledBackColor 	= Rgb(255,255,255), ;
-		Name 				= "txtCurrentPath"
+    *-- The colours of the two messages under the path box.
+    nWarnColor  = RGB(196, 110, 0)
+    nErrorColor = RGB(200, 30, 30)
 
-	Add Object label1 As Label With ;
-		AutoSize 	= .T., ;
-		FontBold 	= .T., ;
-		FontName 	= "Tahoma", ;
-		FontSize 	= 8, ;
-		Alignment 	= 0, ;
-		BackStyle 	= 0, ;
-		Caption 	= "Ruta de Conexión a la Data:", ;
-		Height 		= 15, ;
-		Left 		= 12, ;
-		Top 		= 408, ;
-		Width 		= 157, ;
-		ForeColor 	= Rgb(106,106,106), ;
-		BackColor 	= Rgb(235,235,235), ;
-		Style 		= 0, ;
-		Name 		= "Label1"
+    *-- The texts. Change them before calling GetDir() to translate them.
+    cCapTitle      = "Select folder"
+    cCapFolder     = "Folder:"
+    cCapDrive      = "Drive:"
+    cCapAccept     = "OK"
+    cCapCancel     = "Cancel"
+    cCapNew        = "New folder"
+    cCapNewName    = "New folder"
+    cCapWillCreate = "It does not exist yet. It will be created when you accept."
+    cCapInvalid    = "That path is not valid."
+    cCapCreateFail = "The folder could not be created. Check the permissions."
 
-	Add Object oleimageslist As OleControl With ;
-		oleclass	= "MSComctlLIB.ImagelistCtrl.2",;
-		Top 		= 168, ;
-		Left 		= 24, ;
-		Height 		= 100, ;
-		Width 		= 100, ;
-		Name 		= "oleImagesList"
+    Name = "GetDirPro"
 
-	Add Object label2 As Label With ;
-		AutoSize 	= .T., ;
-		FontBold 	= .T., ;
-		FontName 	= "Tahoma", ;
-		FontSize 	= 8, ;
-		Alignment 	= 0, ;
-		BackStyle 	= 0, ;
-		Caption 	= "Unidad", ;
-		Height 		= 15, ;
-		Left 		= 382, ;
-		Top 		= 408, ;
-		Width 		= 41, ;
-		ForeColor 	= Rgb(106,106,106), ;
-		BackColor 	= Rgb(235,235,235), ;
-		Style 		= 0, ;
-		Name 		= "Label2"
 
-	Add Object lblText As Label With ;
-		AutoSize 	= .T., ;
-		FontBold 	= .T., ;
-		FontName 	= "Tahoma", ;
-		FontSize 	= 8, ;
-		BackStyle 	= 0, ;
-		Caption 	= "Prueba", ;
-		Left 		= 12, ;
-		Top 		= 10, ;
-		Name 		= "lblText"
+    *--------------------------------------------------------------
+    * Opens the dialog and returns the chosen folder, with the final
+    * backslash; "" when the user cancels.
+    *--------------------------------------------------------------
+    FUNCTION GetDir(tcDirectory, tcText, tcCaption)
+        LOCAL loForm, lcDir, lcText
 
-	Procedure filltree
-		Parameters m.path, m.nlevel, m.nCount
-		Local DirArr,i,nTotDir,lvl,pkey
-		m.path = Alltrim(m.path)
-		If Parameters()<2 Or Type("m.nlevel") #"N"
-			lvl = 0
-		Else &&Parameters()<2 Or Type("m.nlevel") #"N"
-			lvl = m.nlevel
-		Endif &&Parameters()<2 Or Type("m.nlevel") #"N"
-		If Parameters()<2 Or Type("m.nCount") #"N"
-			Cnt = 0
-		Else &&Parameters()<2 Or Type("m.nCount") #"N"
-			Cnt = m.nCount
-		Endif &&Parameters()<2 Or Type("m.nCount") #"N"
-		lvl 	= lvl + 1
-		Cnt 	= Cnt + 1
-		pkey 	= Lower(Substr(m.path,1,Rat("\",m.path,2)))+"_"
-* Add items to treeview control
-		o = This.oletreeview
-		If Cnt = 1
-			oNode 		= o.nodes.Add(,1,Lower(m.path)+"_",Lower(m.path),,)
-			oNode.Image = 1         &&"Folder"
-		Else &&Cnt = 1
-			oNode 		= o.nodes.Add(m.pkey,4,Lower(m.path)+"_",Lower(m.path),,)
-			oNode.Image	= 2
-		Endif &&Cnt = 1
-		Dimension DirArr[1,1]
-		nTotDir = Adir(DirArr,m.path+"*.","D")
-		Asort(DirArr)
-		For i = 1 To m.nTotDir
-			If DirArr[m.i,1] != '.' And Atc('D',DirArr[m.i,5])#0
-				This.filltree(m.path+DirArr[m.i,1]+'\', m.lvl, m.cnt)
-			Endif
-		Endfor &&i = 1 To m.nTotDir
-	Endproc
+        lcDir  = IIF(VARTYPE(tcDirectory) == "C", ALLTRIM(tcDirectory), "")
+        lcText = IIF(VARTYPE(tcText) == "C", ALLTRIM(tcText), "")
+        IF VARTYPE(tcCaption) == "C" AND !EMPTY(tcCaption)
+            THIS.cCapTitle = ALLTRIM(tcCaption)
+        ENDIF
 
-	Procedure filldrive
-		For i = 65 To 90 Step 1
-			cVol = Chr(i) + ":\"
-			If Directory(cVol)
-				Insert Into qDisc (cDrive) Values(cVol)
-			Else &&DIRECTORY(cVol)
-			Endif &&DIRECTORY(cVol)
-		Endfor
-	Endproc
+        THIS.cPath = ""
+        loForm = THIS.CreateForm(lcDir, lcText)
 
-	Procedure Init
-		Lparameters tcDirectory As String, tcText As String, tcCaption As String
+        *-- No tree, no dialog: the native one is better than nothing.
+        IF ISNULL(loForm)
+            RETURN GETDIR(lcDir, lcText, THIS.cCapTitle)
+        ENDIF
 
-		If Type("THIS.oleTreeview") # "O" Or Isnull(This.oletreeview)
-			Return .F.
-		Else &&TYPE("THIS.oleTreeview") # "O" OR ISNULL(THIS.oleTreeview)
-		Endif &&TYPE("THIS.oleTreeview") # "O" OR ISNULL(THIS.oleTreeview)
+        loForm.Show(1)
+        RETURN THIS.cPath
+    ENDFUNC
 
-		If Type("THIS.oleImagesList") # "O" Or Isnull(This.oleimageslist)
-			Return .F.
-		Else &&TYPE("THIS.oleImagesList") # "O" OR ISNULL(THIS.oleImagesList)
-		Endif &&TYPE("THIS.oleImagesList") # "O" OR ISNULL(THIS.oleImagesList)
 
-		If Empty(tcCaption)
-			tcCaption = "Seleccione Directorio"
-		Else &&EMPTY(tcCaption)
-		Endif &&EMPTY(tcCaption)
+    *--------------------------------------------------------------
+    * The dialog, built, styled and not shown yet; .NULL. without the
+    * common controls. GetDir() shows it; a test can drive it instead.
+    *--------------------------------------------------------------
+    FUNCTION CreateForm(tcDirectory, tcText)
+        LOCAL loForm, loFss
 
-		This.Caption = tcCaption
+        loForm = .NULL.
+        TRY
+            loForm = CREATEOBJECT("frmGetDirPro", THIS, ;
+                IIF(VARTYPE(tcDirectory) == "C", tcDirectory, ""), ;
+                IIF(VARTYPE(tcText) == "C", tcText, ""))
+        CATCH
+            loForm = .NULL.
+        ENDTRY
+        IF VARTYPE(loForm) <> "O"
+            RETURN .NULL.
+        ENDIF
 
-		This.lblText.Visible = .F.
-		If !Empty(tcText)
-			This.lblText.Caption = tcText
-			This.lblText.Visible = .T.
-		Else &&!EMPTY(tcText)
-		Endif &&!EMPTY(tcText)
+        IF !EMPTY(THIS.cTheme)
+            TRY
+                loFss = CREATEOBJECT("FoxStyleSheet")
+                loFss.link(THIS.cTheme, loForm)
+            CATCH
+                *-- without foxstylesheet.prg the dialog keeps its own look
+            ENDTRY
+        ENDIF
+        THIS.FormReady(loForm)
+        loForm.MatchTreeColors()
+        RETURN loForm
+    ENDFUNC
 
-		If File(Addbs(Sys(2023)) + "SAVE.BMP")
-			This.btnaceptar.Picture = Addbs(Sys(2023)) + "SAVE.BMP"
-		Else &&File(Addbs(SYS(2023)) + "SAVE.BMP")
-		Endif &&File(Addbs(SYS(2023)) + "SAVE.BMP")
 
-		If File(Addbs(Sys(2023)) + "DOOR.BMP")
-			This.btncancelar.Picture = Addbs(Sys(2023)) + "DOOR.BMP"
-		Else &&File(Addbs(SYS(2023)) + "DOOR.BMP")
-		Endif &&File(Addbs(SYS(2023)) + "DOOR.BMP")
+    *--------------------------------------------------------------
+    * Called with the dialog before it is shown. Empty: bind to it
+    * (BINDEVENT) or subclass to style or change the dialog.
+    *--------------------------------------------------------------
+    PROCEDURE FormReady(toForm)
+    ENDPROC
 
-		This.oleimageslist.ListImages.Add(,"Folder",LoadPicture(Addbs(Sys(2023)) + "FOLDER_OPEN.BMP"))
-		This.oleimageslist.ListImages.Add(,"ClosedFolder",LoadPicture(Addbs(Sys(2023)) + "FOLDER_CLOSE.BMP"))
-		This.oletreeview.ImageList = This.oleimageslist.Object
 
-		If !Empty(tcDirectory) And Directory(tcDirectory)
-			Thisform.txtcurrentpath.Value = ADDBS(tcDirectory)
-			Thisform.oletreeview.nodes.Clear
-			Thisform.filltree(ADDBS(tcDirectory))
-			Thisform.cmbdrive.Value = Upper(Left(tcDirectory,3))
-		Else &&!EMPTY(tcDirectory) AND DIRECTORY(tcDirectory)
-		Endif &&!EMPTY(tcDirectory) AND DIRECTORY(tcDirectory)
+    *--------------------------------------------------------------
+    * Creates a folder and every level it is missing above it (MD alone
+    * does not). .T. when the folder exists at the end. Public because
+    * any screen that lets the user type a path needs the same thing.
+    *--------------------------------------------------------------
+    FUNCTION EnsureDir(tcPath)
+        LOCAL lcPath, lcParent
 
-	Endproc
+        lcPath = ALLTRIM(IIF(VARTYPE(tcPath) == "C", tcPath, ""))
+        IF EMPTY(lcPath)
+            RETURN .F.
+        ENDIF
 
-	Procedure Load
-		Set Safety Off
-		Create Cursor qDisc(cDrive c(3))
-		This.filldrive()
-		This.LoadImages()
-	Endproc
+        lcPath = ADDBS(lcPath)
+        IF DIRECTORY(lcPath)
+            RETURN .T.
+        ENDIF
 
-	Procedure LoadImages
-		local imgSave, imgExit, imgFolderClose, imgFolderOpen
-		text to m.imgSave noshow
-		Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAAeGZfYEpCnpGK7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7eznbVlSYEpCeGZfeGZfYEpCnpGK7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7eznbVlSYEpCeGZfeGZfYEpCnpGK7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7ezn7eznbVlSYEpCeGZfeGZfYEpCZqKyI73rI73rI73rI73rI73rI73rI73rI73rI73rI73rZWFfYEpCeGZfeGZfYEpCYqO1GLvrqOX4t+r5t+r5muH2W8/xFrrrFrrrFrrrFrrrZWJgYEpCeGZfeGZfYEpCYqO1GLvrkN72muH2gtr0FrrrFrrrFrrrFrrrFrrrFrrrZWJgYEpCeGZfeGZfYEpCYqO1FrrrLsHtM8PuKsDtFrrrFrrrFrrrFrrrFrrrFrrrZWJgYEpCeGZfeGZfYEpCY1xYZ3FyZ3FyZ3FyZ3FyZ3FyZ3FyZ3FyZ3FyZ3FyZ3FyYU1GYEpCeGZfeGZfYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCeGZfeGZfYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCYEpCeGZfeGZfYEpCYEpCp56Yt7Grt7Grt7Grt7Grl42HjYJ8jYJ8jYJ8ZE9HYEpCYEpCeGZfeGZfYEpCYEpC4N/a7ezn7ezn7ezn6OfjyMvIm5SPmpKNxMbDalZPYEpCYEpCeGZfeGZfYEpCYEpC4N/a7ezn7ezn7ezn1dfTx8rHe2xlfW5nwcK/alZPYEpCYEpCeGZfeGZfYEpCYEpC4N/a7ezn7ezn6OfjyMvIx8rHg3Zvhnp0wcK/alZPYEpCYEpCopWReGZfYEpCYEpC4N/a7ezn7ezn1dfTx8rHx8rHcF5Xb11VwcK/alZPYEpCn5KN/v7+eGZfYEpCYEpC4N/a7ezn6OfjyMvIx8rHx8rHx8rHx8rHx8rHalZPoJOO/v7+////
-		Endtext
+        lcParent = ADDBS(JUSTPATH(LEFT(lcPath, LEN(lcPath) - 1)))
+        IF LEN(lcParent) < LEN(lcPath) AND LEN(lcParent) > 2
+            IF !THIS.EnsureDir(lcParent)
+                RETURN .F.
+            ENDIF
+        ENDIF
 
-		text to m.imgExit noshow
-		Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////////////////////+/v/xcX4fX3vUlLp////////////////////////////////////////xMT3b2/tKyvkGxviGxviMzPiz8/Pz8/Pz8/P3d3d////////////////////////WlrqGxviGxviGxviGxviNzfm/Pz8/Pz8/Pz8y8vL////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviJyfjNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviTEzoOjrn////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm////////////zMzM////////////////////////WlrqGxviGxviGxviGxviNzfm/Pz8/Pz8/Pz8y8vL////////////////////////xMT3b2/tKyvkGxviGxviMzPiz8/Pz8/Pz8/P3d3d////////////////////////////////+/v/xcX4fX3vUlLp////////////////////////////
-		Endtext
+        TRY
+            MD (lcPath)
+        CATCH
+        ENDTRY
 
-		text to m.imgFolderClose noshow
-		Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////////////////////////////////////////////////////////////////v+75quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3ren49v3+////////WtHwSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vsur4////////W9DxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vb9jy////////LcHtS87vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v4/f8////FrrrXtLxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7voOX3////FrrrU83wSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vX9Tx/v//FrrrIL3sT9DwSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v0fP7FrrrFrrrYdLySs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vjuD1FrrrFrrrRcjvS87vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vYtXxFrrrFrrrFrrrIL3rI77sI77sI77sI77sI77sI77sI77sI77sI77sI77srOf4+f3+FrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrr+f4////FrrrFrrrFrrrFrrrFrrrFrrrMMLte9j0e9j0e9j0e9j0e9j0e9j0ftn07Pn9////FrrrFrrrFrrrFrrrFrrrGbvrx+76////////////////////////////////////rOb4kd/2kd/2kd/2kd/2suj4////////////////////////////////////////////////////////////////////////////////////////////////////////
-		Endtext
+        RETURN DIRECTORY(lcPath)
+    ENDFUNC
 
-		text to m.imgFolderOpen noshow
-		Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////////////////////////////////////////////////////////////////v+75quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3ren49v3+////////W9LxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vsur4////////XNDxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vb9jy////////QcfuTM7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v4/f8////QMbukt/zSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7voOX3////QMbu0O72Ss7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vX9Tx/v//QMbu3e/0V9LxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v0fP7QMbu3O/0p+T0Ss7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vjuD1QMbu3O/02fD1TM7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vYtXxKr/su9jfzuPo2evw0OTp1unu0uXq1Ojt1Ojt0uXq1unu0OTp2ezx3fD15fT4+f3+FrrrmdHiyN/k3O/03O/03O/03O/03O/03O/03O/03O/03O/03O/03O/06fX4////Frrrks3fhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/R9/v8////FrrrKb7qNMDrNMDrNMDrN8Dqzu739Pn79Pn79Pn79Pn79Pn79Pn79Pn7////////rOb4kd/2kd/2kd/2kd/2s+n4////////////////////////////////////////////////////////////////////////////////////////////////////////
-		Endtext
 
-		=Strtofile(Strconv(m.imgSave,14),Addbs(SYS(2023)) + "SAVE.BMP")
-		=Strtofile(Strconv(m.imgExit,14),Addbs(SYS(2023)) + "DOOR.BMP")
-		=Strtofile(Strconv(m.imgFolderClose,14),Addbs(SYS(2023)) + "FOLDER_CLOSE.BMP")
-		=Strtofile(Strconv(m.imgFolderOpen,14),Addbs(SYS(2023)) + "FOLDER_OPEN.BMP")
-	Endproc
+    *--------------------------------------------------------------
+    * Whether a typed path can be a folder: a drive or a UNC share, and
+    * none of the characters Windows refuses. A colon is legal after
+    * the drive letter and nowhere else.
+    *--------------------------------------------------------------
+    FUNCTION IsValidPath(tcPath)
+        LOCAL lcP, i, lcBad
 
-	Procedure Destroy
-		Try
-			cFile = Addbs(Sys(2023)) + "SAVE.BMP"
-			Delete File &cFile
-		Catch
-		Endtry
+        lcP = ALLTRIM(IIF(VARTYPE(tcPath) == "C", tcPath, ""))
+        IF LEN(lcP) < 3
+            RETURN .F.
+        ENDIF
 
-		Try
-			cFile = Addbs(Sys(2023)) + "DOOR.BMP"
-			Delete File &cFile
-		Catch
-		Endtry
+        IF !((ISALPHA(LEFT(lcP, 1)) AND SUBSTR(lcP, 2, 1) == ":" ;
+              AND SUBSTR(lcP, 3, 1) $ "\/") OR LEFT(lcP, 2) == "\\")
+            RETURN .F.
+        ENDIF
 
-		Try
-			Delete File (Addbs(Sys(2023)) + "FOLDER_CLOSE.BMP")
-			Delete File &cFile
-		Catch
-		Endtry
+        lcBad = '*?"<>|'
+        FOR i = 1 TO LEN(lcBad)
+            IF SUBSTR(lcBad, i, 1) $ lcP
+                RETURN .F.
+            ENDIF
+        ENDFOR
 
-		Try
-			cFile = Addbs(Sys(2023)) + "FOLDER_OPEN.BMP"
-			Delete File &cFile
-		Catch
-		Endtry
+        IF ":" $ SUBSTR(lcP, 3)
+            RETURN .F.
+        ENDIF
 
-	Endproc
+        RETURN .T.
+    ENDFUNC
 
-	Procedure oletreeview.NodeClick
-*** ActiveX Control Event ***
-		Lparameters Node
-		For Each loNode In Thisform.oletreeview.nodes
-			loNode.Image=2
-			Node.Image=1
-		Endfor
-		Thisform.txtcurrentpath.Value = Node.Text
-	Endproc
+ENDDEFINE
 
-	Procedure cmbdrive.InteractiveChange
-		Thisform.oletreeview.nodes.Clear
-		Thisform.filltree(This.Value)
-	Endproc
 
-	Procedure btncancelar.Click
-		Thisform.cPath = ""
-		Thisform.Hide()
-	Endproc
+*==================================================================
+* The dialog. Reached through GetDirPro.GetDir() or CreateForm().
+*==================================================================
+DEFINE CLASS frmGetDirPro AS Form
 
-	Procedure btnaceptar.Click
-		Thisform.cPath = ""
-		If !Empty(Thisform.txtcurrentpath.Value)
-			Thisform.cPath = Thisform.txtcurrentpath.Value
-		Else &&!EMPTY(THISFORM.txtCurrentPath.VALUE)
-		Endif &&!EMPTY(THISFORM.txtCurrentPath.VALUE)
-		Thisform.Hide()
-	Endproc
+    DataSession = 2
+    Caption     = "Select folder"
+    Width       = 560
+    Height      = 460
+    MinWidth    = 460
+    MinHeight   = 380
+    AutoCenter  = .T.
+    BorderStyle = 3           && resizable: a folder tree likes room
+    MaxButton   = .F.
+    MinButton   = .F.
+    WindowType  = 1           && modal
+    ShowWindow  = 1
+    Name        = "frmGetDirPro"
 
-	Procedure oleimageslist.Init
-		With This
-			.ImageHeight = 16
-			.ImageWidth  = 16
-		Endwith
-	Endproc
-Enddefine
+    oOwner  = .NULL.          && the GetDirPro that opened it
+    oPaths  = .NULL.          && node key -> real path
+    oKeys   = .NULL.          && path in upper case -> node key
+    oLoaded = .NULL.          && keys whose children were read
+    nSeq    = 0               && key counter
+    cSelKey = ""              && node drawn as selected
+    lReady  = .F.             && .F. while it is built: events wait
+    nTreeBack = -1            && colours of the nodes, -1 = Windows'
+    nTreeFore = -1
+
+
+    ADD OBJECT lblPrompt AS label WITH ;
+        Caption = "", BackStyle = 0, ;
+        Left = 12, Top = 12, Width = 360, Height = 18, ;
+        Name = "lblPrompt"
+
+    ADD OBJECT lblDrive AS label WITH ;
+        Caption = "", BackStyle = 0, Alignment = 1, ;
+        Left = 380, Top = 14, Width = 60, Height = 16, ;
+        Name = "lblDrive"
+
+    ADD OBJECT cmbDrive AS combobox WITH ;
+        Style = 2, RowSourceType = 0, ;
+        Left = 444, Top = 10, Width = 104, Height = 24, ;
+        Name = "cmbDrive"
+
+    ADD OBJECT oleTree AS olecontrol WITH ;
+        oleclass = "MSComctlLib.TreeCtrl.2", ;
+        Left = 12, Top = 42, Width = 536, Height = 290, ;
+        Name = "oleTree"
+
+    ADD OBJECT oleImages AS olecontrol WITH ;
+        oleclass = "MSComctlLib.ImageListCtrl.2", ;
+        Left = -100, Top = -100, Width = 32, Height = 32, ;
+        Visible = .F., ;
+        Name = "oleImages"
+
+    ADD OBJECT lblPath AS label WITH ;
+        Caption = "", BackStyle = 0, ;
+        Left = 12, Top = 342, Width = 200, Height = 16, ;
+        Name = "lblPath"
+
+    ADD OBJECT txtPath AS textbox WITH ;
+        Left = 12, Top = 360, Width = 536, Height = 24, ;
+        Value = "", ;
+        Name = "txtPath"
+
+    ADD OBJECT lblStatus AS label WITH ;
+        Caption = "", BackStyle = 0, ;
+        Left = 12, Top = 390, Width = 536, Height = 16, ;
+        Name = "lblStatus"
+
+    ADD OBJECT cmdNew AS commandbutton WITH ;
+        Caption = "", Enabled = .F., ;
+        Left = 12, Top = 412, Width = 130, Height = 28, ;
+        Name = "cmdNew"
+
+    ADD OBJECT cmdOk AS commandbutton WITH ;
+        Caption = "", Default = .T., Enabled = .F., ;
+        Left = 356, Top = 412, Width = 92, Height = 28, ;
+        Name = "cmdOk"
+
+    ADD OBJECT cmdCancel AS commandbutton WITH ;
+        Caption = "", Cancel = .T., ;
+        Left = 456, Top = 412, Width = 92, Height = 28, ;
+        Name = "cmdCancel"
+
+
+    *--------------------------------------------------------------
+    PROCEDURE Init(toOwner, tcDirectory, tcText)
+        LOCAL lcStart
+
+        IF VARTYPE(toOwner) <> "O"
+            RETURN .F.
+        ENDIF
+        THIS.oOwner = toOwner
+
+        *-- Without the common controls there is nothing to do here. An
+        *-- OleControl that could not be created is not an object.
+        IF TYPE("THIS.oleTree") <> "O" OR ISNULL(THIS.oleTree)
+            RETURN .F.
+        ENDIF
+        IF TYPE("THIS.oleImages") <> "O" OR ISNULL(THIS.oleImages)
+            RETURN .F.
+        ENDIF
+
+        THIS.oPaths  = CREATEOBJECT("Collection")
+        THIS.oKeys   = CREATEOBJECT("Collection")
+        THIS.oLoaded = CREATEOBJECT("Collection")
+
+        THIS.Caption            = toOwner.cCapTitle
+        THIS.lblPath.Caption    = toOwner.cCapFolder
+        THIS.lblDrive.Caption   = toOwner.cCapDrive
+        THIS.cmdOk.Caption      = toOwner.cCapAccept
+        THIS.cmdCancel.Caption  = toOwner.cCapCancel
+        THIS.cmdNew.Caption     = toOwner.cCapNew
+
+        THIS.lblPrompt.Caption = IIF(VARTYPE(tcText) == "C", ALLTRIM(tcText), "")
+        THIS.lblPrompt.Visible = !EMPTY(THIS.lblPrompt.Caption)
+
+        IF !toOwner.lAllowCreate
+            THIS.cmdNew.Visible = .F.
+        ENDIF
+
+        *-- Without icons it goes on: a tree without pictures still works.
+        THIS.LoadIcons()
+
+        THIS.FillDrives()
+
+        *-- Where to start: the folder asked for if it exists, and else
+        *-- the current folder of VFP.
+        lcStart = ""
+        IF VARTYPE(tcDirectory) == "C" AND !EMPTY(tcDirectory)
+            IF DIRECTORY(ALLTRIM(tcDirectory))
+                lcStart = ADDBS(ALLTRIM(tcDirectory))
+            ENDIF
+        ENDIF
+        IF EMPTY(lcStart)
+            lcStart = ADDBS(SYS(5) + CURDIR())
+        ENDIF
+
+        THIS.Relayout()
+        THIS.lReady = .T.
+
+        THIS.SelectDrive(LEFT(lcStart, 2))
+        THIS.NavigateTo(lcStart)
+        THIS.UpdateState()
+
+        RETURN .T.
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * The two folder icons travel here in base64, so that the library
+    * is one .prg. Each picture is written to a file of its own and
+    * deleted as soon as LoadPicture has it: two dialogs at once do not
+    * share files, and nothing is left behind if the process dies.
+    *--------------------------------------------------------------
+    FUNCTION LoadIcons()
+        LOCAL lcOpen, lcClose, llOk
+
+        llOk = .F.
+        TEXT TO m.lcOpen NOSHOW
+Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////////////////////////////////////////////////////////////////v+75quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3ren49v3+////////W9LxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vsur4////////XNDxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vb9jy////////QcfuTM7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v4/f8////QMbukt/zSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7voOX3////QMbu0O72Ss7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vX9Tx/v//QMbu3e/0V9LxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v0fP7QMbu3O/0p+T0Ss7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vjuD1QMbu3O/02fD1TM7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vYtXxKr/su9jfzuPo2evw0OTp1unu0uXq1Ojt1Ojt0uXq1unu0OTp2ezx3fD15fT4+f3+FrrrmdHiyN/k3O/03O/03O/03O/03O/03O/03O/03O/03O/03O/03O/06fX4////Frrrks3fhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/Rhr/R9/v8////FrrrKb7qNMDrNMDrNMDrN8Dqzu739Pn79Pn79Pn79Pn79Pn79Pn79Pn7////////rOb4kd/2kd/2kd/2kd/2s+n4////////////////////////////////////////////////////////////////////////////////////////////////////////
+        ENDTEXT
+
+        TEXT TO m.lcClose NOSHOW
+Qk02AwAAAAAAADYAAAAoAAAAEAAAABAAAAABABgAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////////////////////////////////////////////////////////////////v+75quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3quj3ren49v3+////////WtHwSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vsur4////////W9DxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vb9jy////////LcHtS87vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v4/f8////FrrrXtLxSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7voOX3////FrrrU83wSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vX9Tx/v//FrrrIL3sT9DwSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7v0fP7FrrrFrrrYdLySs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vjuD1FrrrFrrrRcjvS87vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vSs7vYtXxFrrrFrrrFrrrIL3rI77sI77sI77sI77sI77sI77sI77sI77sI77sI77srOf4+f3+FrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrFrrrr+f4////FrrrFrrrFrrrFrrrFrrrFrrrMMLte9j0e9j0e9j0e9j0e9j0e9j0ftn07Pn9////FrrrFrrrFrrrFrrrFrrrGbvrx+76////////////////////////////////////rOb4kd/2kd/2kd/2kd/2suj4////////////////////////////////////////////////////////////////////////////////////////////////////////
+        ENDTEXT
+
+        TRY
+            THIS.oleImages.ImageHeight = 16
+            THIS.oleImages.ImageWidth  = 16
+            *-- 1 = open (the selected folder), 2 = closed (the others)
+            THIS.oleImages.ListImages.Add(, "open",  THIS.PictureFrom(m.lcOpen))
+            THIS.oleImages.ListImages.Add(, "close", THIS.PictureFrom(m.lcClose))
+            THIS.oleTree.ImageList = THIS.oleImages.Object
+            llOk = .T.
+        CATCH
+            llOk = .F.
+        ENDTRY
+
+        RETURN llOk
+    ENDFUNC
+
+
+    FUNCTION PictureFrom(tcBase64)
+        LOCAL lcFile, loPic
+
+        lcFile = ADDBS(SYS(2023)) + "gdp" + SYS(2015) + ".bmp"
+        STRTOFILE(STRCONV(tcBase64, 14), lcFile)
+        loPic = LOADPICTURE(lcFile)
+
+        TRY
+            DELETE FILE (lcFile)
+        CATCH
+        ENDTRY
+
+        RETURN loPic
+    ENDFUNC
+
+
+    *--------------------------------------------------------------
+    * The tree is an ActiveX control: a theme does not reach it. It
+    * takes the colours of the path box, so that it follows the theme
+    * of the dialog, the dark one included.
+    *--------------------------------------------------------------
+    PROCEDURE MatchTreeColors
+        LOCAL lnHwnd, loNode
+        THIS.nTreeBack = THIS.txtPath.BackColor
+        THIS.nTreeFore = THIS.txtPath.ForeColor
+        TRY
+            DECLARE INTEGER SendMessage IN user32 AS GdpSendMessage ;
+                INTEGER hWnd, INTEGER Msg, INTEGER wParam, INTEGER lParam
+            lnHwnd = THIS.oleTree.hWnd
+            =GdpSendMessage(lnHwnd, TVM_SETBKCOLOR, 0, THIS.nTreeBack)
+            =GdpSendMessage(lnHwnd, TVM_SETTEXTCOLOR, 0, THIS.nTreeFore)
+            =GdpSendMessage(lnHwnd, TVM_SETLINECOLOR, 0, THIS.nTreeFore)
+        CATCH
+            *-- the tree keeps the colours of Windows
+        ENDTRY
+        *-- each node carries colours of its own, white and black by default
+        TRY
+            FOR EACH loNode IN THIS.oleTree.Nodes
+                THIS.PaintNode(loNode)
+            ENDFOR
+        CATCH
+        ENDTRY
+    ENDPROC
+
+
+    PROCEDURE PaintNode(toNode)
+        IF THIS.nTreeBack < 0 OR VARTYPE(toNode) <> "O"
+            RETURN
+        ENDIF
+        TRY
+            toNode.BackColor = THIS.nTreeBack
+            toNode.ForeColor = THIS.nTreeFore
+        CATCH
+        ENDTRY
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * Drives: the ones that answer. An empty drive or a mapped drive
+    * that is down does not hang the dialog: DIRECTORY() does not block.
+    *--------------------------------------------------------------
+    PROCEDURE FillDrives
+        LOCAL i, lcVol
+        FOR i = 65 TO 90
+            lcVol = CHR(i) + ":\"
+            IF DIRECTORY(lcVol)
+                THIS.cmbDrive.AddItem(CHR(i) + ":")
+            ENDIF
+        ENDFOR
+    ENDPROC
+
+
+    PROCEDURE SelectDrive(tcDrive)
+        LOCAL i, lcD
+        lcD = UPPER(LEFT(ALLTRIM(tcDrive) + "  ", 2))
+        FOR i = 1 TO THIS.cmbDrive.ListCount
+            IF UPPER(THIS.cmbDrive.List(i)) == lcD
+                THIS.cmbDrive.ListIndex = i
+                THIS.SetRoot(lcD)
+                RETURN
+            ENDIF
+        ENDFOR
+        IF THIS.cmbDrive.ListCount > 0
+            THIS.cmbDrive.ListIndex = 1
+            THIS.SetRoot(THIS.cmbDrive.List(1))
+        ENDIF
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * Plants the root of a drive and reads ONLY its first level.
+    *--------------------------------------------------------------
+    PROCEDURE SetRoot(tcDrive)
+        LOCAL lcRoot, lcKey, loNode
+
+        lcRoot = ADDBS(UPPER(ALLTRIM(tcDrive)))
+
+        THIS.oleTree.Nodes.Clear
+        THIS.oPaths  = CREATEOBJECT("Collection")
+        THIS.oKeys   = CREATEOBJECT("Collection")
+        THIS.oLoaded = CREATEOBJECT("Collection")
+        THIS.cSelKey = ""
+
+        lcKey = THIS.NewKey()
+        THIS.Remember(lcKey, lcRoot)
+
+        loNode = THIS.oleTree.Nodes.Add(, 1, lcKey, lcRoot)
+        THIS.SetImage(loNode, 2)
+        THIS.PaintNode(loNode)
+
+        THIS.LoadChildren(loNode)
+        loNode.Expanded = .T.
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * The heart of it: ONE level is read, and only once.
+    *
+    * Each child is born with a placeholder child, so that the tree
+    * draws the "+" without looking inside. When it is opened, the
+    * placeholder goes and the real children are read. Checking whether
+    * each sibling has children would cost one listing per sibling; the
+    * price of not doing it is that an empty folder shows a "+" until it
+    * is opened, as the Windows Explorer did for years.
+    *--------------------------------------------------------------
+    PROCEDURE LoadChildren(toNode)
+        LOCAL lcKey, lcPath, lcDummy, i, lnTot, lcName, lcChildKey, loChild
+        LOCAL ARRAY laNames[1]
+
+        lcKey = toNode.Key
+        IF THIS.oLoaded.GetKey(lcKey) > 0
+            RETURN
+        ENDIF
+        THIS.oLoaded.Add(.T., lcKey)
+
+        lcPath = THIS.PathOf(lcKey)
+        IF EMPTY(lcPath)
+            RETURN
+        ENDIF
+
+        lcDummy = lcKey + "@d"
+        TRY
+            THIS.oleTree.Nodes.Remove(lcDummy)
+        CATCH
+        ENDTRY
+
+        lnTot = THIS.ListFolders(lcPath, @laNames)
+
+        FOR i = 1 TO lnTot
+            lcName = laNames[i]
+
+            lcChildKey = THIS.NewKey()
+            THIS.Remember(lcChildKey, ADDBS(ADDBS(lcPath) + lcName))
+
+            loChild = THIS.oleTree.Nodes.Add(lcKey, 4, lcChildKey, lcName)
+            THIS.SetImage(loChild, 2)
+            THIS.PaintNode(loChild)
+            THIS.AddDummy(lcChildKey)
+        ENDFOR
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * The names of the subfolders, sorted and WITH THEIR CASE.
+    *
+    * They come from FileSystemObject and not from ADIR(), because
+    * ADIR() returns names in upper case: the tree would show FOXAGENT
+    * where the folder is FoxAgent, and that path is what the caller
+    * would store. Hidden and system folders (attributes 2 and 4) are
+    * left out. Without FileSystemObject, ADIR(): a tree in capitals is
+    * better than no tree.
+    *--------------------------------------------------------------
+    FUNCTION ListFolders(tcPath, taNames)
+        LOCAL loFSO, loFolder, loSub, lnCount, i, lnTot, llFso
+        LOCAL ARRAY laD[1, 1]
+
+        lnCount = 0
+        llFso   = .F.
+
+        TRY
+            loFSO    = CREATEOBJECT("Scripting.FileSystemObject")
+            loFolder = loFSO.GetFolder(ADDBS(tcPath))
+            llFso    = .T.
+        CATCH
+            llFso = .F.
+        ENDTRY
+
+        IF llFso
+            TRY
+                FOR EACH loSub IN loFolder.SubFolders
+                    IF BITAND(loSub.Attributes, 6) > 0
+                        LOOP
+                    ENDIF
+                    lnCount = lnCount + 1
+                    DIMENSION taNames[lnCount]
+                    taNames[lnCount] = loSub.Name
+                ENDFOR
+            CATCH
+                *-- A folder that cannot be entered stops the listing:
+                *-- what was read before stays, which beats nothing.
+            ENDTRY
+        ELSE
+            TRY
+                lnTot = ADIR(laD, ADDBS(tcPath) + "*.*", "D")
+            CATCH
+                lnTot = 0
+            ENDTRY
+            FOR i = 1 TO lnTot
+                IF ATC("D", laD[i, 5]) = 0
+                    LOOP
+                ENDIF
+                IF laD[i, 1] == "." OR laD[i, 1] == ".."
+                    LOOP
+                ENDIF
+                lnCount = lnCount + 1
+                DIMENSION taNames[lnCount]
+                taNames[lnCount] = laD[i, 1]
+            ENDFOR
+        ENDIF
+
+        *-- The last 1 ignores case: otherwise Zeta goes before alpha.
+        IF lnCount > 1
+            ASORT(taNames, 1, lnCount, 0, 1)
+        ENDIF
+
+        RETURN lnCount
+    ENDFUNC
+
+
+    PROCEDURE AddDummy(tcKey)
+        TRY
+            THIS.PaintNode(THIS.oleTree.Nodes.Add(tcKey, 4, tcKey + "@d", "..."))
+        CATCH
+        ENDTRY
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * Opens the tree down to a path and leaves it selected.
+    *--------------------------------------------------------------
+    FUNCTION NavigateTo(tcPath)
+        LOCAL lcPath, lcAcum, lnI, lnN, lcKey, loNode
+        LOCAL ARRAY laParts[1]
+
+        lcPath = ADDBS(ALLTRIM(tcPath))
+        IF !DIRECTORY(lcPath)
+            RETURN .F.
+        ENDIF
+
+        lnN = ALINES(laParts, STRTRAN(lcPath, "\", CHR(13)))
+        IF lnN < 1
+            RETURN .F.
+        ENDIF
+
+        lcAcum = ADDBS(laParts[1])
+        lcKey  = THIS.KeyOf(lcAcum)
+        IF EMPTY(lcKey)
+            RETURN .F.
+        ENDIF
+
+        loNode = THIS.oleTree.Nodes.Item(lcKey)
+        THIS.LoadChildren(loNode)
+        loNode.Expanded = .T.
+
+        FOR lnI = 2 TO lnN
+            IF EMPTY(ALLTRIM(laParts[lnI]))
+                LOOP
+            ENDIF
+            lcAcum = ADDBS(lcAcum + ALLTRIM(laParts[lnI]))
+            lcKey  = THIS.KeyOf(lcAcum)
+            IF EMPTY(lcKey)
+                EXIT
+            ENDIF
+            loNode = THIS.oleTree.Nodes.Item(lcKey)
+            THIS.LoadChildren(loNode)
+            loNode.Expanded = .T.
+        ENDFOR
+
+        THIS.Highlight(loNode)
+        loNode.Selected = .T.
+        TRY
+            loNode.EnsureVisible()
+        CATCH
+        ENDTRY
+
+        THIS.txtPath.Value = THIS.PathOf(loNode.Key)
+
+        RETURN .T.
+    ENDFUNC
+
+
+    *--------------------------------------------------------------
+    * Keys and paths. A node shows the NAME of the folder; the real
+    * path, with its case, lives here, and it is the one returned.
+    *--------------------------------------------------------------
+    FUNCTION NewKey()
+        THIS.nSeq = THIS.nSeq + 1
+        RETURN "n" + TRANSFORM(THIS.nSeq)
+    ENDFUNC
+
+
+    PROCEDURE Remember(tcKey, tcPath)
+        LOCAL lnIdx
+
+        THIS.oPaths.Add(tcPath, tcKey)
+
+        *-- A path comes again when a node is reloaded: the collection
+        *-- refuses a duplicate key, so the old one goes.
+        lnIdx = THIS.oKeys.GetKey(UPPER(tcPath))
+        IF lnIdx > 0
+            THIS.oKeys.Remove(lnIdx)
+        ENDIF
+        THIS.oKeys.Add(tcKey, UPPER(tcPath))
+    ENDPROC
+
+
+    FUNCTION PathOf(tcKey)
+        IF THIS.oPaths.GetKey(tcKey) > 0
+            RETURN THIS.oPaths.Item(tcKey)
+        ENDIF
+        RETURN ""
+    ENDFUNC
+
+
+    FUNCTION KeyOf(tcPath)
+        IF THIS.oKeys.GetKey(UPPER(ADDBS(ALLTRIM(tcPath)))) > 0
+            RETURN THIS.oKeys.Item(UPPER(ADDBS(ALLTRIM(tcPath))))
+        ENDIF
+        RETURN ""
+    ENDFUNC
+
+
+    PROCEDURE SetImage(toNode, tnImage)
+        TRY
+            toNode.Image = tnImage
+        CATCH
+        ENDTRY
+    ENDPROC
+
+
+    *-- Only TWO nodes are repainted, not the whole tree.
+    PROCEDURE Highlight(toNode)
+        IF !EMPTY(THIS.cSelKey)
+            TRY
+                THIS.SetImage(THIS.oleTree.Nodes.Item(THIS.cSelKey), 2)
+            CATCH
+            ENDTRY
+        ENDIF
+        THIS.SetImage(toNode, 1)
+        THIS.cSelKey = toNode.Key
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * The buttons, and the "does not exist" message.
+    *--------------------------------------------------------------
+    PROCEDURE UpdateState
+        LOCAL lcPath, llExists
+
+        lcPath = ALLTRIM(THIS.txtPath.Value)
+        THIS.lblStatus.Caption = ""
+
+        IF EMPTY(lcPath)
+            THIS.cmdOk.Enabled  = .F.
+            THIS.cmdNew.Enabled = .F.
+            RETURN
+        ENDIF
+
+        llExists = DIRECTORY(lcPath)
+
+        *-- A new folder hangs from one that exists.
+        THIS.cmdNew.Enabled = llExists AND THIS.oOwner.lAllowCreate
+
+        IF llExists
+            THIS.cmdOk.Enabled = .T.
+            RETURN
+        ENDIF
+
+        IF THIS.oOwner.lAllowCreate AND THIS.oOwner.IsValidPath(lcPath)
+            THIS.lblStatus.Caption   = THIS.oOwner.cCapWillCreate
+            THIS.lblStatus.ForeColor = THIS.oOwner.nWarnColor
+            THIS.cmdOk.Enabled       = .T.
+        ELSE
+            THIS.lblStatus.Caption   = THIS.oOwner.cCapInvalid
+            THIS.lblStatus.ForeColor = THIS.oOwner.nErrorColor
+            THIS.cmdOk.Enabled       = .F.
+        ENDIF
+    ENDPROC
+
+
+    *-- Reads the children of a folder again, without reloading the tree.
+    PROCEDURE ReloadNode(tcPath)
+        LOCAL lcKey, loNode, lnIdx
+
+        lcKey = THIS.KeyOf(tcPath)
+        IF EMPTY(lcKey)
+            RETURN
+        ENDIF
+
+        TRY
+            loNode = THIS.oleTree.Nodes.Item(lcKey)
+        CATCH
+            RETURN
+        ENDTRY
+
+        DO WHILE loNode.Children > 0
+            TRY
+                THIS.oleTree.Nodes.Remove(loNode.Child.Index)
+            CATCH
+                EXIT
+            ENDTRY
+        ENDDO
+
+        lnIdx = THIS.oLoaded.GetKey(lcKey)
+        IF lnIdx > 0
+            THIS.oLoaded.Remove(lnIdx)
+        ENDIF
+
+        THIS.LoadChildren(loNode)
+        loNode.Expanded = .T.
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * Events
+    *--------------------------------------------------------------
+    PROCEDURE oleTree.Expand
+        LPARAMETERS toNode
+        IF !THISFORM.lReady
+            RETURN
+        ENDIF
+        THISFORM.LoadChildren(toNode)
+    ENDPROC
+
+
+    PROCEDURE oleTree.NodeClick
+        LPARAMETERS toNode
+        IF !THISFORM.lReady
+            RETURN
+        ENDIF
+        THISFORM.Highlight(toNode)
+        THISFORM.txtPath.Value = THISFORM.PathOf(toNode.Key)
+        THISFORM.UpdateState()
+    ENDPROC
+
+
+    PROCEDURE oleTree.DblClick
+        IF !THISFORM.lReady
+            RETURN
+        ENDIF
+        *-- A double click on a folder that exists accepts it.
+        IF THISFORM.cmdOk.Enabled AND DIRECTORY(ALLTRIM(THISFORM.txtPath.Value))
+            THISFORM.cmdOk.Click()
+        ENDIF
+    ENDPROC
+
+
+    PROCEDURE cmbDrive.InteractiveChange
+        IF !THISFORM.lReady
+            RETURN
+        ENDIF
+        THISFORM.SetRoot(THIS.Value)
+        THISFORM.txtPath.Value = ADDBS(UPPER(ALLTRIM(THIS.Value)))
+        THISFORM.UpdateState()
+    ENDPROC
+
+
+    *-- The path box does NOT move the tree, on purpose: OK is the
+    *-- default button, so Enter accepts the typed path, and moving the
+    *-- tree on LostFocus means rebuilding the whole ActiveX.
+    PROCEDURE txtPath.InteractiveChange
+        IF !THISFORM.lReady
+            RETURN
+        ENDIF
+        THISFORM.UpdateState()
+    ENDPROC
+
+
+    *-- No InputBox, on purpose: a dialog inside a dialog cannot be
+    *-- tested without a human. It proposes the new path in the box with
+    *-- the name SELECTED to type over it; OK creates it, the same way as
+    *-- a typed path that does not exist.
+    PROCEDURE cmdNew.Click
+        LOCAL lcBase, lcProp
+
+        lcBase = ALLTRIM(THISFORM.txtPath.Value)
+        IF !DIRECTORY(lcBase)
+            RETURN
+        ENDIF
+
+        lcProp = THISFORM.ProposeName(lcBase)
+        THISFORM.txtPath.Value = ADDBS(lcBase) + lcProp
+
+        TRY
+            THISFORM.txtPath.SetFocus()
+            THISFORM.txtPath.SelStart  = LEN(ADDBS(lcBase))
+            THISFORM.txtPath.SelLength = LEN(lcProp)
+        CATCH
+        ENDTRY
+
+        THISFORM.UpdateState()
+    ENDPROC
+
+
+    *-- "New folder", "New folder (2)"... until one is free.
+    FUNCTION ProposeName(tcBase)
+        LOCAL lcName, lnI
+
+        lcName = THIS.oOwner.cCapNewName
+        IF !DIRECTORY(ADDBS(tcBase) + lcName)
+            RETURN lcName
+        ENDIF
+
+        FOR lnI = 2 TO 99
+            IF !DIRECTORY(ADDBS(tcBase) + lcName + " (" + TRANSFORM(lnI) + ")")
+                RETURN lcName + " (" + TRANSFORM(lnI) + ")"
+            ENDIF
+        ENDFOR
+
+        RETURN lcName
+    ENDFUNC
+
+
+    PROCEDURE cmdOk.Click
+        LOCAL lcPath
+
+        lcPath = ALLTRIM(THISFORM.txtPath.Value)
+        IF EMPTY(lcPath)
+            RETURN
+        ENDIF
+
+        IF !DIRECTORY(lcPath)
+            IF !THISFORM.oOwner.lAllowCreate
+                RETURN
+            ENDIF
+            IF !THISFORM.oOwner.EnsureDir(lcPath)
+                THISFORM.lblStatus.Caption   = THISFORM.oOwner.cCapCreateFail
+                THISFORM.lblStatus.ForeColor = THISFORM.oOwner.nErrorColor
+                RETURN
+            ENDIF
+        ENDIF
+
+        THISFORM.oOwner.cPath = ADDBS(lcPath)
+        THISFORM.Release()
+    ENDPROC
+
+
+    PROCEDURE cmdCancel.Click
+        THISFORM.oOwner.cPath = ""
+        THISFORM.Release()
+    ENDPROC
+
+
+    *--------------------------------------------------------------
+    * Layout, from the current size, so that the window can stretch.
+    *--------------------------------------------------------------
+    PROCEDURE Relayout
+        LOCAL lnW, lnH, lnBase
+
+        lnW = THIS.Width
+        lnH = THIS.Height
+
+        THIS.lblPrompt.Left  = 12
+        THIS.lblPrompt.Top   = 12
+        THIS.lblPrompt.Width = MAX(lnW - 190, 80)
+
+        THIS.lblDrive.Left = lnW - 180
+        THIS.lblDrive.Top  = 14
+        THIS.cmbDrive.Left = lnW - 116
+        THIS.cmbDrive.Top  = 10
+
+        THIS.oleTree.Left   = 12
+        THIS.oleTree.Top    = 42
+        THIS.oleTree.Width  = MAX(lnW - 24, 200)
+        THIS.oleTree.Height = MAX(lnH - 170, 80)
+
+        lnBase = THIS.oleTree.Top + THIS.oleTree.Height + 10
+
+        THIS.lblPath.Left  = 12
+        THIS.lblPath.Top   = lnBase
+
+        THIS.txtPath.Left  = 12
+        THIS.txtPath.Top   = lnBase + 18
+        THIS.txtPath.Width = MAX(lnW - 24, 200)
+
+        THIS.lblStatus.Left  = 12
+        THIS.lblStatus.Top   = lnBase + 48
+        THIS.lblStatus.Width = MAX(lnW - 24, 200)
+
+        THIS.cmdNew.Left    = 12
+        THIS.cmdNew.Top     = lnBase + 70
+        THIS.cmdOk.Left     = lnW - 204
+        THIS.cmdOk.Top      = lnBase + 70
+        THIS.cmdCancel.Left = lnW - 104
+        THIS.cmdCancel.Top  = lnBase + 70
+    ENDPROC
+
+
+    PROCEDURE Resize
+        IF !THIS.lReady
+            RETURN
+        ENDIF
+        THIS.Relayout()
+    ENDPROC
+
+ENDDEFINE

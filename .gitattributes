@@ -1,0 +1,12 @@
+# VFP binaries and their memo files: git must never touch them (VFP rule 50)
+*.pjx binary
+*.pjt binary
+*.scx binary
+*.sct binary
+*.vcx binary
+*.vct binary
+*.frx binary
+*.frt binary
+*.mnx binary
+*.mnt binary
+*.png binary

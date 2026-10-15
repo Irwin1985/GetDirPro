@@ -1,0 +1,9 @@
+*.fxp
+*.FXP
+*.err
+*.ERR
+*.bak
+*.BAK
+FOXUSER.*
+foxuser.*
+_command.prg
