@@ -120,6 +120,9 @@ and none of the characters Windows refuses. Returns `.T.` or `.F.`.
   bars stay as Windows draws them.
 - **An empty folder shows a "+".** The tree reads one level at a time, and a folder shows
   its "+" until it is opened. That is what makes it open at once on a big disk.
+- **The title bar of the dialog stays as VFP draws it.** The dialog is a modal window
+  inside your form (`ShowWindow = 1`), and Windows does not paint a dark title bar there:
+  `darkTitleBar` of a theme only reaches top-level forms.
 - **Hidden and system folders are not listed.** A typed path still reaches them.
 - **The path ends with a backslash.** `JUSTSTEM()` of it is empty: use
   `JUSTFNAME(LEFT(lcFolder, LEN(lcFolder) - 1))` for the name of the folder.
